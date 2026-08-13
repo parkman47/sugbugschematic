@@ -6,6 +6,8 @@
     <h1>Live form</h1>
     <label>Draft <textarea id="draft">initial</textarea></label>
     <label>Password <input id="password" type="password" value="never-capture-this"></label>
+    <input id="csrf" type="hidden" name="csrf" value="never-capture-csrf">
+    <input id="session_nonce" type="hidden" name="session_nonce" value="never-capture-session">
     <canvas id="canvas" width="80" height="30"></canvas>
   </main>
   <script>

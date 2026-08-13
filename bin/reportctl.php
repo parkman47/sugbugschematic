@@ -7,6 +7,8 @@ function usage(int $status = 0): never
 Usage:
   php bin/reportctl.php pull <report-id> --url <relay-public-url> [--token <admin-token>]
       [--out <directory>] [--resolve "resolution note"] [--retention keep|metadata|delete]
+  php bin/reportctl.php scrub <report-id> --url <relay-public-url> [--token <admin-token>]
+      [--keep-screenshot true]
 
 The token may also be supplied as LIVE_REPORT_ADMIN_TOKEN.
 The default local archive directory is ./.bug-reports.
@@ -44,7 +46,7 @@ function request_json(string $url, string $token, string $method = 'GET', ?array
 
 $arguments = $argv;
 array_shift($arguments);
-if (($arguments[0] ?? null) !== 'pull' || !isset($arguments[1])) {
+if (!in_array($arguments[0] ?? null, ['pull', 'scrub'], true) || !isset($arguments[1])) {
     usage(1);
 }
 $options = ['command' => $arguments[0], 'id' => $arguments[1], 'out' => '.bug-reports'];
@@ -62,6 +64,13 @@ if (($options['url'] ?? '') === '' || $token === '') {
 }
 $base = rtrim($options['url'], '/');
 $id = rawurlencode($options['id']);
+$command = $options['command'];
+if ($command === 'scrub') {
+    $deleteScreenshot = strtolower((string) ($options['keep-screenshot'] ?? 'false')) !== 'true';
+    $result = request_json("{$base}/admin.php?action=scrub&id={$id}", $token, 'POST', ['deleteScreenshot' => $deleteScreenshot]);
+    fwrite(STDOUT, "Scrubbed {$options['id']}; DOM changed: " . ($result['domScrubbed'] ? 'yes' : 'no') . '; screenshot deleted: ' . ($result['screenshotDeleted'] ? 'yes' : 'no') . PHP_EOL);
+    exit(0);
+}
 $bundle = request_json("{$base}/admin.php?action=export&id={$id}", $token);
 $destination = rtrim($options['out'], "\\/") . DIRECTORY_SEPARATOR . $options['id'];
 if (!is_dir($destination) && !mkdir($destination, 0700, true) && !is_dir($destination)) {

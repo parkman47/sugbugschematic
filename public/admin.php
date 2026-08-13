@@ -14,6 +14,9 @@ try {
     if ($action === 'resolve' && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         relay_json_response(200, relay_resolve_report($config, relay_read_json(1024 * 1024) + ['id' => $id]));
     }
+    if ($action === 'scrub' && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
+        relay_json_response(200, relay_scrub_report($config, relay_read_json(1024 * 1024) + ['id' => $id]));
+    }
     throw new RelayHttpException(404, 'Unknown administrative action');
 } catch (RelayHttpException $error) {
     relay_json_response($error->status, ['ok' => false, 'error' => $error->getMessage()]);

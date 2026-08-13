@@ -50,8 +50,8 @@
   function sensitiveField(element, privateSelector) {
     if (!element || !element.matches) return false;
     if (element.closest(privateSelector)) return true;
-    var joined = [element.name, element.id, element.getAttribute("autocomplete"), element.getAttribute("aria-label")].join(" ").toLowerCase();
-    return element.type === "password" || /(?:password|passwd|secret|token|api[_ -]?key|authorization|cookie|one-time|otp|credit|card|cc-)/.test(joined);
+    var joined = [element.name, element.id, element.type, element.getAttribute("autocomplete"), element.getAttribute("aria-label")].join(" ").toLowerCase().replace(/[^a-z0-9]+/g, "");
+    return element.type === "password" || /(?:csrf|xsrf|nonce|session|token|authorization|cookie|password|passwd|secret|apikey|otp|onetime|payment|creditcard|cardnumber|cardholder|ccnumber|cvc|cvv)/.test(joined);
   }
 
   function stripExecutableContent(root) {

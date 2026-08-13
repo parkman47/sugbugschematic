@@ -60,6 +60,13 @@ function relay_project(array $config, string $projectId): array
 function relay_header(string $name): string
 {
     $key = 'HTTP_' . strtoupper(str_replace('-', '_', $name));
+    if (strcasecmp($name, 'Authorization') === 0) {
+        foreach (['HTTP_AUTHORIZATION', 'REDIRECT_HTTP_AUTHORIZATION', 'AUTHORIZATION'] as $authorizationKey) {
+            if (isset($_SERVER[$authorizationKey]) && $_SERVER[$authorizationKey] !== '') {
+                return (string) $_SERVER[$authorizationKey];
+            }
+        }
+    }
     return (string) ($_SERVER[$key] ?? '');
 }
 
@@ -232,6 +239,112 @@ function relay_normalize_image(mixed $dataUrl): ?array
     return ['mime_type' => $matches[1], 'extension' => $extensions[$matches[1]], 'bytes' => $bytes];
 }
 
+function relay_sensitive_identifier(mixed $value): bool
+{
+    $normalized = strtolower((string) $value);
+    $normalized = preg_replace('/[^a-z0-9]+/', '', $normalized) ?? '';
+    if ($normalized === '') {
+        return false;
+    }
+    foreach ([
+        'csrf', 'xsrf', 'nonce', 'session', 'token', 'authorization', 'cookie',
+        'password', 'passwd', 'secret', 'apikey', 'otp', 'onetime', 'payment',
+        'creditcard', 'cardnumber', 'cardholder', 'ccnumber', 'cvc', 'cvv',
+    ] as $sensitive) {
+        if (str_contains($normalized, $sensitive)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function relay_sensitive_form_record(array $record): bool
+{
+    if (strtolower((string) ($record['type'] ?? '')) === 'password') {
+        return true;
+    }
+    foreach (['name', 'id', 'selector', 'type', 'autocomplete', 'label', 'ariaLabel', 'aria-label'] as $key) {
+        if (isset($record[$key]) && relay_sensitive_identifier($record[$key])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function relay_redact_capture_value(mixed $value, string|int|null $parentKey = null): mixed
+{
+    if ($parentKey !== null && relay_sensitive_identifier($parentKey)) {
+        return '[REDACTED]';
+    }
+    if (!is_array($value)) {
+        return $value;
+    }
+    $sensitiveRecord = !array_is_list($value) && relay_sensitive_form_record($value);
+    $redacted = [];
+    foreach ($value as $key => $item) {
+        if ($sensitiveRecord && in_array((string) $key, ['value', 'values', 'checked', 'selected', 'selectedIndex'], true)) {
+            $redacted[$key] = '[REDACTED]';
+            continue;
+        }
+        $redacted[$key] = relay_redact_capture_value($item, $key);
+    }
+    return $redacted;
+}
+
+function relay_html_attribute(string $tag, string $attribute): ?string
+{
+    $quoted = preg_quote($attribute, '/');
+    if (!preg_match('/(?:^|\s)' . $quoted . '\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s>]+))/i', $tag, $matches)) {
+        return null;
+    }
+    return html_entity_decode((string) ($matches[1] !== '' ? $matches[1] : ($matches[2] !== '' ? $matches[2] : $matches[3])), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+}
+
+function relay_sensitive_html_tag(string $tag): bool
+{
+    if (strtolower((string) relay_html_attribute($tag, 'type')) === 'password') {
+        return true;
+    }
+    foreach (['name', 'id', 'type', 'autocomplete', 'aria-label'] as $attribute) {
+        if (relay_sensitive_identifier(relay_html_attribute($tag, $attribute))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function relay_replace_html_attribute(string $tag, string $attribute, string $value): string
+{
+    $quoted = preg_quote($attribute, '/');
+    $tag = preg_replace('/\s+' . $quoted . '\s*=\s*(?:"[^"]*"|\'[^\']*\'|[^\s>]+)/i', '', $tag) ?? $tag;
+    $encoded = htmlspecialchars($value, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    if (preg_match('/\s*\/>$/', $tag)) {
+        return preg_replace('/\s*\/>$/', ' ' . $attribute . '="' . $encoded . '" />', $tag, 1) ?? $tag;
+    }
+    return preg_replace('/>$/', ' ' . $attribute . '="' . $encoded . '">', $tag, 1) ?? $tag;
+}
+
+function relay_scrub_dom_html(string $html): string
+{
+    $html = preg_replace_callback('/<input\b(?:[^>"\']+|"[^"]*"|\'[^\']*\')*>/is', static function (array $match): string {
+        if (!relay_sensitive_html_tag($match[0])) {
+            return $match[0];
+        }
+        $tag = relay_replace_html_attribute($match[0], 'value', '[REDACTED]');
+        return relay_replace_html_attribute($tag, 'data-live-report-redacted', 'true');
+    }, $html) ?? $html;
+
+    $html = preg_replace_callback('/<(textarea|select)\b((?:[^>"\']+|"[^"]*"|\'[^\']*\')*)>(.*?)<\/\1\s*>/is', static function (array $match): string {
+        $opening = '<' . $match[1] . $match[2] . '>';
+        if (!relay_sensitive_html_tag($opening)) {
+            return $match[0];
+        }
+        $opening = relay_replace_html_attribute($opening, 'data-live-report-redacted', 'true');
+        return $opening . '[REDACTED]</' . strtolower($match[1]) . '>';
+    }, $html) ?? $html;
+    return $html;
+}
+
 function relay_report_directory(array $config, string $projectId, string $reportId): string
 {
     return $config['data_dir'] . '/projects/' . relay_safe_segment($projectId, 'project') . '/reports/' . relay_safe_segment($reportId, 'report id');
@@ -247,8 +360,8 @@ function relay_save_submission(array $config, string $projectId, array $body): a
     if ($note === '') {
         throw new RelayHttpException(400, 'A description is required');
     }
-    $domHtml = is_string($body['domHtml'] ?? null) ? $body['domHtml'] : '';
-    $capture = is_array($body['capture'] ?? null) ? $body['capture'] : [];
+    $domHtml = is_string($body['domHtml'] ?? null) ? relay_scrub_dom_html($body['domHtml']) : '';
+    $capture = is_array($body['capture'] ?? null) ? relay_redact_capture_value($body['capture']) : [];
     $image = relay_normalize_image($body['screenshotDataUrl'] ?? null);
     $createdAt = gmdate('c');
     $id = $projectId . '-' . gmdate('Ymd\THis\Z') . '-' . bin2hex(random_bytes(4));
@@ -390,4 +503,40 @@ function relay_resolve_report(array $config, array $arguments): array
     $report['updatedAt'] = gmdate('c');
     relay_atomic_json($directory . '/report.json', $report);
     return ['id' => $report['id'], 'status' => 'resolved', 'retention' => $retention, 'assets' => $report['assets']];
+}
+
+function relay_scrub_report(array $config, array $arguments): array
+{
+    [$report, $directory] = relay_locate_report($config, (string) ($arguments['id'] ?? ''));
+    $report['capture'] = relay_redact_capture_value($report['capture'] ?? []);
+    $domScrubbed = false;
+    if (isset($report['assets']['dom'])) {
+        $filename = $directory . '/' . $report['assets']['dom'];
+        if (is_file($filename)) {
+            $original = (string) file_get_contents($filename);
+            $scrubbed = relay_scrub_dom_html($original);
+            if ($scrubbed !== $original) {
+                file_put_contents($filename, $scrubbed, LOCK_EX);
+                @chmod($filename, 0600);
+                $domScrubbed = true;
+            }
+        }
+    }
+    $screenshotDeleted = false;
+    if (($arguments['deleteScreenshot'] ?? true) !== false && isset($report['assets']['screenshot'])) {
+        @unlink($directory . '/' . $report['assets']['screenshot']);
+        unset($report['assets']['screenshot'], $report['assets']['screenshotMimeType']);
+        $screenshotDeleted = true;
+    }
+    $report['scrubbedAt'] = gmdate('c');
+    $report['updatedAt'] = $report['scrubbedAt'];
+    relay_atomic_json($directory . '/report.json', $report);
+    return [
+        'id' => $report['id'],
+        'status' => $report['status'],
+        'scrubbed' => true,
+        'domScrubbed' => $domScrubbed,
+        'screenshotDeleted' => $screenshotDeleted,
+        'assets' => $report['assets'],
+    ];
 }
