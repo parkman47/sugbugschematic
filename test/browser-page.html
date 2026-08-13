@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Reporter browser fixture</title></head>
+<body>
+  <main>
+    <h1>Live form</h1>
+    <label>Draft <textarea id="draft">initial</textarea></label>
+    <label>Password <input id="password" type="password" value="never-capture-this"></label>
+    <canvas id="canvas" width="80" height="30"></canvas>
+  </main>
+  <script>
+    const context = document.getElementById("canvas").getContext("2d");
+    context.fillStyle = "#e35";
+    context.fillRect(0, 0, 80, 30);
+  </script>
+  <script src="http://127.0.0.1:8790/widget.js?v=2"></script>
+  <script>
+    LiveReportRelay.mount({
+      endpoint: "http://127.0.0.1:8790",
+      project: "browser-test",
+      submitKey: "browser-test-key",
+      context: { release: "browser-fixture" }
+    });
+  </script>
+</body>
+</html>

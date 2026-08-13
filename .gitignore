@@ -1,0 +1,6 @@
+data/
+.env
+config/projects.json
+.bug-reports/
+*.log
+node_modules/

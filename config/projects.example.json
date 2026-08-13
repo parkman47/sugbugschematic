@@ -1,0 +1,10 @@
+{
+  "projects": {
+    "weblod": {
+      "submitKeys": ["replace-this-browser-visible-project-key"],
+      "allowedOrigins": ["https://example.com"],
+      "retentionOnResolve": "metadata",
+      "maxReportsPerHourPerIp": 20
+    }
+  }
+}
