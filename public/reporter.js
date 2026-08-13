@@ -320,7 +320,8 @@
         var snapshot = await (capturePromise || capturePage(config));
         var screenshotDataUrl = screenshot.files[0] ? await fileToDataUrl(screenshot.files[0]) : null;
         var base = String(config.endpoint).replace(/\/$/, "");
-        var response = await fetch(base + "/api/v1/projects/" + encodeURIComponent(config.project) + "/reports", {
+        var submitUrl = config.submitUrl || (base + "/submit.php?project=" + encodeURIComponent(config.project));
+        var response = await fetch(submitUrl, {
           method: "POST",
           headers: { "content-type": "application/json", "x-report-key": config.submitKey },
           body: JSON.stringify({ categories: categories, note: note.value, domHtml: snapshot.domHtml, capture: snapshot.capture, screenshotDataUrl: screenshotDataUrl }),

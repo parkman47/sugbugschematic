@@ -1,6 +1,4 @@
 data/
-.env
-config/projects.json
+config/config.php
 .bug-reports/
 *.log
-node_modules/

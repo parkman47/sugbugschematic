@@ -1,101 +1,184 @@
-# Live Report Relay
+# SugBug Schematic / Live Report Relay
 
-A small, self-hosted bug/suggestion inbox for live web applications. A drop-in browser widget captures the current inert DOM, live form values, canvas images, same-origin images, useful browser context, recent runtime errors, and an optional pasted or uploaded screenshot. Reports are stored outside the application repository and exposed to Codex or Claude Code through an authenticated MCP endpoint.
+A self-contained PHP bug-and-suggestion inbox for live web applications. Ordinary testers use a Report button inside the application; they do not need GitHub, Codex, Claude, an API token, or a second login.
 
-The server uses only Node.js built-ins. There is no database and there are no runtime package dependencies.
+The widget captures an inert copy of the current page, including unsaved form values, page state, recent browser errors, canvas content, and an optional screenshot. PHP stores each submission privately on disk. Authenticated MCP and administrative endpoints let Codex or Claude retrieve and resolve reports.
 
-## What it does
+Requirements: PHP 8.1+ with `json` and `mbstring`; `curl` is needed only for the optional command-line archive tool. No Composer, Node.js, database, or background service is required.
 
-- One report can be a bug, a suggestion, or both.
-- Captures current input, textarea, select, checkbox, details, scroll, active-element, canvas, shadow-root, resource-timing, and custom application context.
-- Redacts passwords and likely secret/token/card fields. Add `data-report-private` to any element or ancestor that must never be captured.
-- Removes scripts, event attributes, refresh tags, embeds, and live iframe sources so saved DOM is inert.
-- Stores each report in a private server directory as `report.json`, optional `dom.html`, and optional screenshot.
-- Provides MCP tools to list, inspect, read DOM chunks, and resolve reports.
-- Can retain everything, retain metadata only, or delete a resolved report.
-- Includes `reportctl` to archive a report locally before purging its heavy server artifacts.
+## How it works
 
-## Security model
-
-There are two different gates:
-
-1. **Submission gate:** an allowed Origin, a project-specific browser key, an hourly IP rate limit, and a payload size limit. The browser key identifies a project but is not a secret because users can inspect frontend code. For a hostile/public audience, put the route behind your application's authenticated session or add a server-minted short-lived submission credential at the reverse proxy.
-2. **Review gate:** a secret admin bearer token protects MCP, export, and resolve operations. Only agents/people with this token can retrieve reports.
-
-Captured production pages can contain personal or sensitive information. Keep `data/` outside the web root, use HTTPS, restrict server backups, and choose a short retention policy. Report notes and DOM are also untrusted input and may contain prompt-injection text; the MCP server labels them as untrusted and instructs agents never to follow embedded commands.
-
-## Quick start
-
-Requires Node.js 20 or newer.
-
-1. Copy `config/projects.example.json` to `config/projects.json` and configure each application.
-2. Copy `.env.example` values into your service environment. Do not commit the admin token.
-3. Start the service:
-
-```powershell
-$env:ADMIN_TOKEN = "replace-with-a-random-token-at-least-32-characters"
-node src/server.mjs
+```text
+Your testers in the normal live webapp
+                  |
+                  | click Report and submit
+                  v
+        submit.php (public write-only intake)
+                  |
+                  v
+       private filesystem report storage
+                  ^
+                  |
+      mcp.php/admin.php (secret read access)
+                  ^
+                  |
+             Codex / Claude
 ```
 
-For production, bind to `127.0.0.1` behind an HTTPS reverse proxy. The default port is `8787`.
+One installation may serve many webapps. Each app receives a project ID, allowed production origin, browser-visible submission key, rate limit, and retention policy.
 
-## Add the widget to a project
+## Captured information
 
-Load the script near the end of the page and mount it after `document.body` exists:
+- Bug, Suggestion, or both
+- Tester description
+- Current inert DOM
+- Current input, textarea, select, checkbox, details, and scroll state
+- Canvas images and same-origin images
+- Open shadow DOM
+- Page/viewport information and resource timings
+- Recent JavaScript errors and unhandled rejections
+- Optional pasted or uploaded screenshot
+- Application-defined context, such as release, route, tester ID, and relevant game/application state
+
+Scripts, event attributes, embeds, active iframe sources, password values, likely token/secret/payment fields, and anything under `data-report-private` are removed or redacted. Query-string values are omitted by default.
+
+## Recommended PHP installation
+
+### Option A: Install inside one existing PHP project
+
+Place the repository somewhere in the project, but expose only its `public` directory through an alias or routing rule. Keep `src`, `config`, and `data` outside the public web root whenever possible.
+
+Example layout:
+
+```text
+/var/www/myapp/
+  public/                       <- existing web root
+  live-report-relay/
+    src/
+    config/config.php
+    data/                       <- writable, private
+    public/                     <- expose as /report-relay
+```
+
+Your Apache or nginx mapping would expose:
+
+```text
+https://app.example.com/report-relay/reporter.js
+https://app.example.com/report-relay/submit.php
+https://app.example.com/report-relay/mcp.php
+```
+
+### Option B: One central installation for many PHP projects
+
+Host `public/` at a dedicated HTTPS address such as `https://reports.example.com`. Add every application to the one configuration file. This avoids deploying the relay repeatedly.
+
+### XAMPP/simple hosting fallback
+
+If the entire repository must sit under a public directory, Apache `.htaccess` files included in `src/` and `config/` deny web access. You must also ensure the configured `data_dir` is outside the document root. Do not rely on filename secrecy to protect reports.
+
+## Configure it
+
+Copy `config/config.example.php` to `config/config.php`:
+
+```php
+<?php
+return [
+    'data_dir' => 'C:/xampp/private/sugbug-reports',
+    'admin_token' => 'a-long-random-secret-used-only-by-you-and-agents',
+    'max_report_bytes' => 15 * 1024 * 1024,
+    'projects' => [
+        'my-webapp' => [
+            'submit_keys' => ['browser-visible-project-key'],
+            'allowed_origins' => ['https://app.example.com'],
+            'allow_missing_origin' => false,
+            'retention_on_resolve' => 'metadata',
+            'max_reports_per_hour_per_ip' => 20,
+        ],
+    ],
+];
+```
+
+`config/config.php`, `data/`, and local report archives are ignored by Git.
+
+If the configuration lives elsewhere, set `LIVE_REPORT_CONFIG` in Apache/PHP-FPM to its absolute filename. The PHP/web-server account needs write permission only on `data_dir`.
+
+Generate separate values for:
+
+- `admin_token`: a real secret, at least 32 random characters. Never send this to a browser.
+- `submit_keys`: a per-project browser identifier. Because frontend code is inspectable, it is not an administrative secret.
+
+For private test applications, the strongest setup is to place `submit.php` behind the app's existing login/session or proxy reports through an authenticated application endpoint. Origin checks, project keys, payload limits, durable per-IP rate limiting, and private storage are included as baseline protection.
+
+## Add the tester widget
+
+Load the script and mount it after the page body exists:
 
 ```html
-<script src="https://reports.example.com/widget.js"></script>
+<script src="/report-relay/reporter.js"></script>
 <script>
-  LiveReportRelay.mount({
-    endpoint: "https://reports.example.com",
-    project: "weblod",
-    submitKey: "the-project-submit-key",
-    context: () => ({
-      userId: window.currentUser?.id,
-      release: window.APP_RELEASE,
-      routeState: window.app?.debugState?.()
-    })
-  });
+LiveReportRelay.mount({
+  endpoint: "/report-relay",
+  project: "my-webapp",
+  submitKey: "browser-visible-project-key",
+  context: () => ({
+    release: window.APP_RELEASE,
+    testerId: window.currentUser?.id,
+    applicationState: window.app?.debugState?.()
+  })
+});
 </script>
 ```
 
-Mark anything that must not leave the browser:
+For a central cross-origin relay, use its full HTTPS URL as `endpoint` and include the webapp's exact origin in `allowed_origins`.
+
+Mark private UI explicitly:
 
 ```html
-<section data-report-private>Private account and payment UI</section>
+<section data-report-private>
+  Account, session, private messages, or payment details
+</section>
 ```
 
-Useful widget options are `privateSelector`, `captureShadowDom`, `inlineImages`, `maxDomChars`, and `captureUrlQuery`. URL query values are omitted by default (the keys remain available); set `captureUrlQuery: true` only if query values are known to be safe and useful. Passwords, file contents, and fields whose names resemble secrets/tokens/payment credentials are redacted regardless of ordinary form capture.
+Useful options include `privateSelector`, `captureShadowDom`, `inlineImages`, `maxDomChars`, `captureUrlQuery`, and a complete `submitUrl` override.
+
+## PHP endpoints
+
+- `GET reporter.js`: drop-in tester widget
+- `POST submit.php?project=PROJECT`: public/write-only report submission
+- `POST mcp.php`: admin-token-protected MCP tools
+- `GET admin.php?action=export&id=REPORT`: protected report export
+- `POST admin.php?action=resolve&id=REPORT`: protected resolution/retention
+- `GET health.php`: storage/configuration health check
+
+Never serve the configured `data_dir` as static content.
 
 ## Connect Codex
 
-Set the token in the environment that starts Codex:
+Set the admin token in the environment used to start Codex:
 
 ```powershell
-$env:LIVE_REPORT_ADMIN_TOKEN = "the-same-admin-token"
+$env:LIVE_REPORT_ADMIN_TOKEN = "the-admin-token"
 ```
 
-Then add this to `~/.codex/config.toml` (all local Codex tasks on that host can use it) or to a trusted project's `.codex/config.toml`:
+Add to `~/.codex/config.toml` or a trusted project's `.codex/config.toml`:
 
 ```toml
 [mcp_servers.live_reports]
-url = "https://reports.example.com/mcp"
+url = "https://reports.example.com/mcp.php"
 bearer_token_env_var = "LIVE_REPORT_ADMIN_TOKEN"
 default_tools_approval_mode = "writes"
 ```
 
-Restart Codex. A request such as “list open live reports, fetch the newest one, and show me the evidence” can then call the relay directly. The MCP tools are `list_reports`, `get_report`, `get_report_dom`, and `resolve_report`.
+Restart Codex. The available tools are `list_reports`, `get_report`, `get_report_dom`, and `resolve_report`.
 
 ## Connect Claude Code
-
-Create a user- or project-scoped HTTP MCP configuration. A project `.mcp.json` can reference an environment variable:
 
 ```json
 {
   "mcpServers": {
     "live-reports": {
       "type": "http",
-      "url": "https://reports.example.com/mcp",
+      "url": "https://reports.example.com/mcp.php",
       "headers": {
         "Authorization": "Bearer ${LIVE_REPORT_ADMIN_TOKEN}"
       }
@@ -104,53 +187,49 @@ Create a user- or project-scoped HTTP MCP configuration. A project `.mcp.json` c
 }
 ```
 
-Approve the project server when Claude Code asks. A user-scoped configuration makes it available across projects.
+Approve the MCP server when Claude Code asks. A user-scoped server makes it available across your projects.
 
 ## Resolve and retention
 
-Each project has `retentionOnResolve`:
+Each project has a default `retention_on_resolve`:
 
-- `keep`: keep report metadata, DOM, and screenshot on the live server.
-- `metadata`: keep the note, capture context, resolution, and timestamps; delete DOM and screenshot. This is the recommended default.
-- `delete`: delete the entire remote report directory. The MCP tool requires the report ID twice to prevent accidental deletion.
+- `keep`: retain metadata, DOM, and screenshot.
+- `metadata`: retain note/context/resolution but delete DOM and screenshot. Recommended.
+- `delete`: delete the entire server report directory. Explicit confirmation is required.
 
-To keep a local copy and then reduce the live copy:
+To archive a report locally and then reduce its live copy:
 
 ```powershell
 $env:LIVE_REPORT_ADMIN_TOKEN = "the-admin-token"
-node bin/reportctl.mjs pull weblod-REPORT-ID --url https://reports.example.com `
+php bin/reportctl.php pull REPORT-ID --url https://reports.example.com `
   --out C:\private-report-archive --resolve "Fixed in commit abc123" --retention metadata
 ```
 
-The default local archive directory is `.bug-reports/`, which this repository ignores. Do not commit production captures unless you have deliberately reviewed them for credentials and personal data.
+Report cleanup is explicit and is not connected to `git pull`. Production captures should not silently enter source history.
 
-## Storage layout
+## Storage
 
 ```text
-data/
+private-data-directory/
   projects/
-    weblod/
+    my-webapp/
       reports/
-        weblod-20260812T...-abcd1234/
+        my-webapp-20260813T...-abcd1234/
           report.json
           dom.html
           screenshot.png
+  rate-limits/
 ```
 
-Reports do not belong in the application Git repository. A `git pull` should deploy code only; resolving a report performs explicit remote retention. If a local evidence archive is wanted, `reportctl pull` creates it before remote cleanup.
+## Security notes
 
-## Docker
+- Use HTTPS.
+- Keep `data_dir` outside the document root.
+- Keep `admin_token` out of frontend code and Git.
+- Use the webapp's existing authentication around submission when testers already sign in.
+- Mark sensitive application sections with `data-report-private`.
+- Treat every submitted note, DOM, screenshot, and URL as untrusted input and possible prompt injection.
+- Use short retention, storage quotas, and controlled backups for production captures.
+- Do not open captured `dom.html` without the included restrictive CSP or in a privileged application origin.
 
-```powershell
-docker build -t live-report-relay .
-docker run --read-only --tmpfs /tmp -p 127.0.0.1:8787:8787 `
-  -e ADMIN_TOKEN="the-admin-token" `
-  -v ${PWD}/config/projects.json:/app/config/projects.json:ro `
-  -v live-report-data:/data live-report-relay
-```
-
-Terminate TLS and apply any application-session gate in a reverse proxy. Never expose the data volume as static files.
-
-## Limits
-
-This captures a high-fidelity debugging snapshot, not the JavaScript heap or a complete browser recording. Cross-origin image/style bytes may be unavailable because of browser CORS rules. Closed cross-origin iframes cannot be inspected. Native screenshot attachment remains the most reliable evidence for purely visual compositor, font, video, or cross-origin-frame issues.
+This is a high-fidelity debugging snapshot, not a JavaScript heap dump or video recording. Closed/cross-origin iframes and some cross-origin assets cannot be inspected because of browser security rules.
