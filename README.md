@@ -40,7 +40,9 @@ One installation may serve many webapps. Each app receives a project ID, allowed
 - Optional pasted or uploaded screenshot
 - Application-defined context, such as release, route, tester ID, and relevant game/application state
 
-Scripts, event attributes, embeds, active iframe sources, password values, likely token/secret/payment fields, and anything under `data-report-private` are removed or redacted. Query-string values are omitted by default.
+Scripts, event attributes, embeds, active iframe sources, password values, and anything under `data-report-private` are removed or redacted. Sensitive identifiers—including CSRF/XSRF, nonce, session, token, authorization, cookie, password, secret, API key, OTP, and payment/card fields—are redacted. Query-string values are omitted by default.
+
+Redaction runs twice: once in the browser and again in PHP before anything is written. The PHP layer recursively redacts sensitive capture keys and form-state records, and scrubs sensitive input/textarea/select content from the submitted DOM. This protects against stale widgets and custom clients.
 
 ## Recommended PHP installation
 
@@ -72,9 +74,17 @@ https://app.example.com/report-relay/mcp.php
 
 Host `public/` at a dedicated HTTPS address such as `https://reports.example.com`. Add every application to the one configuration file. This avoids deploying the relay repeatedly.
 
-### XAMPP/simple hosting fallback
+### XAMPP/shared-hosting fallback
 
 If the entire repository must sit under a public directory, Apache `.htaccess` files included in `src/` and `config/` deny web access. You must also ensure the configured `data_dir` is outside the document root. Do not rely on filename secrecy to protect reports.
+
+The included `public/.htaccess` preserves bearer credentials on shared Apache/FastCGI hosts that otherwise strip the `Authorization` header:
+
+```apache
+SetEnvIfNoCase Authorization "^(.*)$" HTTP_AUTHORIZATION=$1
+```
+
+The PHP reader accepts `HTTP_AUTHORIZATION`, `REDIRECT_HTTP_AUTHORIZATION`, and `AUTHORIZATION`. If `.htaccess` overrides are disabled, place the directive in the relevant Apache virtual host instead.
 
 ## Configure it
 
@@ -148,6 +158,7 @@ Useful options include `privateSelector`, `captureShadowDom`, `inlineImages`, `m
 - `POST mcp.php`: admin-token-protected MCP tools
 - `GET admin.php?action=export&id=REPORT`: protected report export
 - `POST admin.php?action=resolve&id=REPORT`: protected resolution/retention
+- `POST admin.php?action=scrub&id=REPORT`: protected repair of an existing report
 - `GET health.php`: storage/configuration health check
 
 Never serve the configured `data_dir` as static content.
@@ -169,7 +180,7 @@ bearer_token_env_var = "LIVE_REPORT_ADMIN_TOKEN"
 default_tools_approval_mode = "writes"
 ```
 
-Restart Codex. The available tools are `list_reports`, `get_report`, `get_report_dom`, and `resolve_report`.
+Restart Codex. The available tools are `list_reports`, `get_report`, `get_report_dom`, `scrub_report`, and `resolve_report`.
 
 ## Connect Claude Code
 
@@ -206,6 +217,17 @@ php bin/reportctl.php pull REPORT-ID --url https://reports.example.com `
 ```
 
 Report cleanup is explicit and is not connected to `git pull`. Production captures should not silently enter source history.
+
+### Repair reports captured by an older widget
+
+Reports created before a redaction update may already contain sensitive metadata or DOM values. Scrub them before retaining or reviewing them:
+
+```powershell
+$env:LIVE_REPORT_ADMIN_TOKEN = "the-admin-token"
+php bin/reportctl.php scrub REPORT-ID --url https://reports.example.com
+```
+
+`scrub` recursively redacts retained capture metadata and sensitive DOM form fields. It deletes the screenshot by default because sensitive pixels cannot be identified safely. Use `--keep-screenshot true` only after manually determining that the image is safe. The MCP `scrub_report` tool provides the same operation.
 
 ## Storage
 

@@ -1,0 +1,3 @@
+# Some shared Apache/FastCGI configurations strip Authorization before PHP.
+# Preserve it so Bearer authentication reaches mcp.php and admin.php.
+SetEnvIfNoCase Authorization "^(.*)$" HTTP_AUTHORIZATION=$1
